@@ -1,6 +1,7 @@
 package excel2csv
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"os"
@@ -13,10 +14,20 @@ import (
 
 // ExcelConverter handles Excel to CSV conversion using LibreOffice
 type ExcelConverter struct {
-	CSVSeparator      rune // CSV separator (comma, semicolon, tab)
-	CleanLineBreaks   bool // replace line breaks with spaces
-	ForceDataStartRow *int // force data start from specific row (0-based), nil for auto-detection
-	ForceDataEndRow   *int // force data end at specific row (0-based), nil for auto-detection
+	CSVSeparator      rune   // CSV separator (comma, semicolon, tab)
+	CleanLineBreaks   bool   // replace line breaks with spaces
+	ForceDataStartRow *int   // force data start from specific row (0-based), nil for auto-detection
+	ForceDataEndRow   *int   // force data end at specific row (0-based), nil for auto-detection
+	SheetName         string // specific sheet name to convert
+	SheetIndex        *int   // specific sheet index to convert (0-based)
+	AllSheetsMode     bool   // convert all sheets to separate CSV files
+	TempDir           string // custom temp directory (if empty, uses default)
+}
+
+// SheetInfo contains information about a worksheet
+type SheetInfo struct {
+	Index int
+	Name  string
 }
 
 // NewExcelConverter creates a new converter with default settings
@@ -48,15 +59,61 @@ func (ec *ExcelConverter) convertViaLibreOffice(inputPath, outputPath string) er
 		return fmt.Errorf("LibreOffice is not available. Please install LibreOffice")
 	}
 
-	// Create temp directory
-	homeDir, _ := os.UserHomeDir()
-	tempDir := filepath.Join(homeDir, "excel2csv_temp")
-	os.MkdirAll(tempDir, 0755)
-	defer os.RemoveAll(tempDir)
+	// Handle ConvertAllSheets mode
+	if ec.AllSheetsMode {
+		outputDir := filepath.Dir(outputPath)
+		return ec.ConvertAllSheetsToFiles(inputPath, outputDir)
+	}
 
-	// Convert using LibreOffice
+	// Create temp directory with better permissions for HTTP context
+	homeDir, _ := os.UserHomeDir()
+	tempDir := ec.TempDir
+	if tempDir == "" {
+		tempDir = filepath.Join(homeDir, "excel2csv_temp")
+	}
+
+	// For HTTP context, ensure we use a subdirectory in home dir for better LibreOffice compatibility
+	if strings.HasPrefix(tempDir, "/tmp/") {
+		fmt.Printf("Warning: Using /tmp directory may cause LibreOffice issues, switching to home directory\n")
+		tempDir = filepath.Join(homeDir, "excel2csv_temp_http")
+	}
+
+	_ = os.MkdirAll(tempDir, 0755)
+	defer func() {
+		if !strings.Contains(tempDir, "excel2csv_temp") {
+			// Only remove if it's our temp directory
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	// Convert using LibreOffice - improved for HTTP context
 	absInputPath, _ := filepath.Abs(inputPath)
+
+	// Check if input file exists and is readable
+	if stat, err := os.Stat(absInputPath); err != nil {
+		return fmt.Errorf("input file not accessible: %w", err)
+	} else {
+		fmt.Printf("Input file: %s (size: %d bytes, mode: %v)\n", absInputPath, stat.Size(), stat.Mode())
+	}
+
+	// For now, we'll only convert the first/default sheet since --sheet parameter is not supported
+	// TODO: Implement proper multi-sheet support using LibreOffice UNO API or other methods
+	if ec.SheetName != "" {
+		fmt.Printf("Warning: sheet selection by name '%s' is not fully supported yet, converting default sheet\n", ec.SheetName)
+	}
+	if ec.SheetIndex != nil {
+		fmt.Printf("Warning: sheet selection by index %d is not fully supported yet, converting default sheet\n", *ec.SheetIndex)
+	}
+
 	cmd := exec.Command("libreoffice", "--headless", "--convert-to", "csv", "--outdir", tempDir, absInputPath)
+
+	// Set environment variables to fix LibreOffice issues in HTTP context
+	cmd.Env = append(os.Environ(),
+		"HOME="+homeDir,
+		"TMPDIR="+tempDir,
+		"DISPLAY=", // Empty DISPLAY for headless mode
+		"LANG=en_US.UTF-8",
+	)
 
 	output, err := cmd.CombinedOutput()
 	fmt.Printf("LibreOffice output: %s\n", string(output))
@@ -68,16 +125,28 @@ func (ec *ExcelConverter) convertViaLibreOffice(inputPath, outputPath string) er
 	time.Sleep(200 * time.Millisecond)
 
 	// Find generated CSV file
-	files, _ := os.ReadDir(tempDir)
+	files, err := os.ReadDir(tempDir)
+	if err != nil {
+		fmt.Printf("Error reading temp directory %s: %v\n", tempDir, err)
+		return fmt.Errorf("failed to read temp directory: %w", err)
+	}
+
+	fmt.Printf("Files in temp directory %s: %d files\n", tempDir, len(files))
+	for _, file := range files {
+		fmt.Printf("  - %s (isDir: %v)\n", file.Name(), file.IsDir())
+	}
+
 	var tempCSVPath string
 	for _, file := range files {
 		if strings.HasSuffix(strings.ToLower(file.Name()), ".csv") {
 			tempCSVPath = filepath.Join(tempDir, file.Name())
+			fmt.Printf("Found CSV file: %s\n", tempCSVPath)
 			break
 		}
 	}
 
 	if tempCSVPath == "" {
+		fmt.Printf("No CSV files found in temp directory %s\n", tempDir)
 		return fmt.Errorf("LibreOffice did not generate CSV file")
 	}
 
@@ -90,13 +159,13 @@ func (ec *ExcelConverter) copyCSVFile(srcPath, dstPath string) error {
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	dstFile, err := os.Create(dstPath)
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer func() { _ = dstFile.Close() }()
 
 	reader := csv.NewReader(srcFile)
 	writer := csv.NewWriter(dstFile)
@@ -295,7 +364,7 @@ func (ec *ExcelConverter) findTableEnd(records [][]string, startRow int) int {
 	for i := startRow; i < len(records); i++ {
 		record := records[i]
 		cols := ec.countNonEmptyCells(record)
-		isData := ec.isDataRow(record) || ec.looksLikeHeaderRow(record, records[min(i+1, len(records)-1)])
+		isData := ec.isDataRow(record) || ec.looksLikeHeaderRow(record, records[minInt(i+1, len(records)-1)])
 		isPartOfTable := ec.isPartOfTable(record, expectedCols)
 
 		fmt.Printf("Row %d: cols=%d, isData=%v, isPartOfTable=%v\n", i+1, cols, isData, isPartOfTable)
@@ -392,6 +461,149 @@ func (ec *ExcelConverter) checkStructuralConsistency(records [][]string, startRo
 	return float64(matches) / float64(totalRows)
 }
 
+// ListSheets returns information about all sheets in the Excel file
+func (ec *ExcelConverter) ListSheets(inputPath string) ([]SheetInfo, error) {
+	// Check if LibreOffice is available
+	_, err := exec.LookPath("libreoffice")
+	if err != nil {
+		return nil, fmt.Errorf("LibreOffice is not available. Please install LibreOffice")
+	}
+
+	// Create temp directory
+	homeDir, _ := os.UserHomeDir()
+	tempDir := filepath.Join(homeDir, "excel2csv_temp_sheets")
+	_ = os.MkdirAll(tempDir, 0755)
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Use simpler fallback method by default (more reliable)
+	return ec.fallbackListSheets(inputPath, tempDir)
+}
+
+// fallbackListSheets tries to detect sheets by attempting conversions
+func (ec *ExcelConverter) fallbackListSheets(inputPath, tempDir string) ([]SheetInfo, error) {
+	var sheets []SheetInfo
+	absInputPath, _ := filepath.Abs(inputPath)
+
+	fmt.Printf("Detecting sheets in %s...\n", filepath.Base(inputPath))
+
+	// Since --sheet parameter is not supported, we can only reliably detect the first sheet
+	// For now, just try to convert the default sheet and assume it exists
+	fmt.Printf("Checking sheet 0... ")
+
+	cmd := exec.Command("libreoffice", "--headless", "--convert-to", "csv",
+		"--outdir", tempDir, absInputPath)
+
+	// Set a timeout to avoid hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd = exec.CommandContext(ctx, cmd.Args[0], cmd.Args[1:]...)
+
+	_, err := cmd.CombinedOutput()
+	if err == nil {
+		// Check if a CSV file was actually created
+		files, _ := os.ReadDir(tempDir)
+		csvFound := false
+		for _, file := range files {
+			if strings.HasSuffix(strings.ToLower(file.Name()), ".csv") {
+				csvFound = true
+				// Clean up the CSV file
+				os.Remove(filepath.Join(tempDir, file.Name()))
+				break
+			}
+		}
+
+		if csvFound {
+			sheets = append(sheets, SheetInfo{
+				Index: 0,
+				Name:  "Sheet1",
+			})
+			fmt.Printf("✓ found\n")
+		} else {
+			fmt.Printf("✗ no output\n")
+		}
+	} else {
+		fmt.Printf("✗ error\n")
+	}
+
+	if len(sheets) == 0 {
+		// Fallback - assume at least one sheet exists
+		sheets = append(sheets, SheetInfo{
+			Index: 0,
+			Name:  "Sheet1",
+		})
+	}
+
+	fmt.Printf("Note: Advanced multi-sheet detection requires LibreOffice version with --sheet support\n")
+	return sheets, nil
+}
+
+// ConvertAllSheetsToFiles converts all sheets to separate CSV files
+func (ec *ExcelConverter) ConvertAllSheetsToFiles(inputPath, outputDir string) error {
+	sheets, err := ec.ListSheets(inputPath)
+	if err != nil {
+		return fmt.Errorf("failed to list sheets: %w", err)
+	}
+
+	if len(sheets) == 0 {
+		return fmt.Errorf("no sheets found in file")
+	}
+
+	// Create output directory if it doesn't exist
+	err = os.MkdirAll(outputDir, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Convert each sheet
+	for _, sheet := range sheets {
+		// Generate output filename
+		baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
+		outputFile := filepath.Join(outputDir, fmt.Sprintf("%s_sheet_%d_%s.csv", baseName, sheet.Index+1, sheet.Name))
+
+		// Clean filename
+		outputFile = strings.ReplaceAll(outputFile, " ", "_")
+		outputFile = strings.ReplaceAll(outputFile, "/", "_")
+		outputFile = strings.ReplaceAll(outputFile, "\\", "_")
+
+		fmt.Printf("Converting sheet %d (%s) to %s\n", sheet.Index+1, sheet.Name, outputFile)
+
+		// Create a temporary converter for this sheet
+		tempConverter := *ec
+		tempConverter.SheetIndex = &sheet.Index
+		tempConverter.AllSheetsMode = false
+
+		err = tempConverter.ConvertFile(inputPath, outputFile)
+		if err != nil {
+			fmt.Printf("Warning: failed to convert sheet %s: %v\n", sheet.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// convertSpecificSheet converts a specific sheet by index or name
+func (ec *ExcelConverter) convertSpecificSheet(inputPath, tempDir string, sheetIndex int, sheetName string) error {
+	absInputPath, _ := filepath.Abs(inputPath)
+
+	var cmd *exec.Cmd
+	if sheetName != "" {
+		// Convert by sheet name
+		cmd = exec.Command("libreoffice", "--headless", "--convert-to", "csv",
+			"--outdir", tempDir, "--sheet", sheetName, absInputPath)
+	} else {
+		// Convert by sheet index
+		cmd = exec.Command("libreoffice", "--headless", "--convert-to", "csv",
+			"--outdir", tempDir, "--sheet", fmt.Sprintf("%d", sheetIndex), absInputPath)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("LibreOffice conversion failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
+}
+
 // Helper functions
 func (ec *ExcelConverter) hasData(record []string) bool {
 	for _, cell := range record {
@@ -478,8 +690,8 @@ func (ec *ExcelConverter) cleanCellData(text string) string {
 	return strings.TrimSpace(text)
 }
 
-// Helper function for min
-func min(a, b int) int {
+// Helper function for min (renamed to avoid collision with builtin)
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

@@ -1,0 +1,33 @@
+# Файлы сборки
+*.log
+*.tmp
+.DS_Store
+.idea/
+.vscode/
+
+# Go файлы
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+vendor/
+
+# Тестовые файлы
+*.csv
+examples/
+test_output.csv
+denso_test.csv
+invoice_test.csv
+
+# Git и другие VCS
+.git/
+.gitignore
+
+# Docker файлы
+Dockerfile.*
+docker-compose.override.yml
+
+# Временные файлы
+tmp/
+temp/

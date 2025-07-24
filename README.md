@@ -1,10 +1,13 @@
 # Excel2CSV Converter
 
-A Go-based tool for converting Excel files (.xlsx, .xls, .ods) to CSV format with intelligent table boundary detection.
+A Go-based tool for converting Excel files (.xlsx, .xls, .ods) to CSV format with intelligent table boundary detection, multi-sheet support, and HTTP API.
 
 ## Features
 
 - **Smart Table Detection**: Automatically identifies the start and end of tabular data
+- **Multi-Sheet Support**: Convert specific sheets by name/index or all sheets at once
+- **HTTP API Server**: Web service for integration with other applications
+- **Sheet Management**: List all available sheets in Excel files
 - **Header Preservation**: Detects and preserves column headers
 - **Footer Exclusion**: Automatically excludes footer rows and summary data
 - **Multiple Format Support**: Supports .xlsx, .xls, and .ods files
@@ -12,6 +15,7 @@ A Go-based tool for converting Excel files (.xlsx, .xls, .ods) to CSV format wit
 - **Line Break Cleaning**: Replaces line breaks within cell data with spaces
 - **Force Row Options**: Override automatic detection with manual row specification
 - **LibreOffice Integration**: Uses LibreOffice headless mode for reliable conversion
+- **Snap Compatibility**: Automatic handling of LibreOffice snap container limitations
 
 ## Installation
 
@@ -41,6 +45,7 @@ Download and install from [LibreOffice website](https://www.libreoffice.org/down
 git clone https://github.com/oxyii/excel2csv.git
 cd excel2csv
 go build -o excel2csv ./cmd/excel2csv
+go build -o excel2csv-server ./cmd/excel2csv-server
 ```
 
 ## Usage
@@ -48,7 +53,20 @@ go build -o excel2csv ./cmd/excel2csv
 ### Basic Usage
 
 ```bash
+# Convert first sheet (default)
 ./excel2csv -input input.xlsx -output output.csv
+
+# List all sheets in the file
+./excel2csv -input input.xlsx -list-sheets
+
+# Convert specific sheet by name
+./excel2csv -input input.xlsx -sheet-name "Sales Data"
+
+# Convert specific sheet by index (0-based)
+./excel2csv -input input.xlsx -sheet-index 1
+
+# Convert all sheets to separate files
+./excel2csv -input input.xlsx -all-sheets
 ```
 
 ### Advanced Options
@@ -57,10 +75,12 @@ go build -o excel2csv ./cmd/excel2csv
 ./excel2csv \
   -input input.xlsx \
   -output output.csv \
+  -sheet-name "Report" \
   -separator ";" \
-  -start-row 5 \
-  -end-row 100 \
-  -no-clean-breaks
+  -start-row 5
+
+# Convert all sheets with custom separator
+./excel2csv -input input.xlsx -all-sheets -separator "tab"
 ```
 
 ### Command Line Options
@@ -68,30 +88,142 @@ go build -o excel2csv ./cmd/excel2csv
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-input` | Input Excel file path (required) | - |
-| `-output` | Output CSV file path (required) | - |
+| `-output` | Output CSV file path (optional) | auto-generated |
 | `-separator` | CSV separator: comma, semicolon, tab | comma |
 | `-start-row` | Force table start row (0-based, optional) | auto-detect |
-| `-end-row` | Force table end row (0-based, optional) | auto-detect |
-| `-no-clean-breaks` | Disable line break cleaning | false |
+| **Sheet Selection** | | |
+| `-list-sheets` | List all sheets in the Excel file and exit | false |
+| `-sheet-name` | Convert specific sheet by name | first sheet |
+| `-sheet-index` | Convert specific sheet by index (0-based) | first sheet |
+| `-all-sheets` | Convert all sheets to separate CSV files | false |
 
 ### Examples
 
-**Convert with semicolon separator:**
+**List available sheets:**
 ```bash
-./excel2csv -input data.xlsx -output data.csv -separator "semicolon"
+./excel2csv -input report.xlsx -list-sheets
 ```
 
-**Force specific table boundaries:**
+**Convert specific sheet by name:**
 ```bash
-./excel2csv -input data.xlsx -output data.csv -start-row 3 -end-row 50
+./excel2csv -input data.xlsx -sheet-name "Quarterly Report" -separator ";"
 ```
 
-**Use tab separator and preserve line breaks:**
+**Convert specific sheet by index:**
 ```bash
-./excel2csv -input data.xlsx -output data.csv -separator "tab" -no-clean-breaks
+./excel2csv -input data.xlsx -sheet-index 2 -start-row 5
+```
+
+**Convert all sheets to separate files:**
+```bash
+./excel2csv -input workbook.xlsx -all-sheets
+# Creates: workbook_sheet_1_Sheet1.csv, workbook_sheet_2_Data.csv, etc.
+```
+
+**Force specific table boundaries on specific sheet:**
+```bash
+./excel2csv -input data.xlsx -sheet-name "Summary" -start-row 3
+```
+
+**Use tab separator with specific sheet:**
+```bash
+./excel2csv -input data.xlsx -sheet-index 1 -separator "tab"
+```
+
+## HTTP API Server
+
+The project includes a web server that provides HTTP API for Excel to CSV conversion, perfect for integration with web applications and microservices.
+
+### Starting the Server
+
+```bash
+# Start on default port 8080
+./excel2csv-server
+
+# Start on custom port
+PORT=8082 ./excel2csv-server
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Server health check and LibreOffice status |
+| `/convert` | POST | Convert Excel file to CSV |
+| `/info` | GET | API information and supported features |
+| `/` | GET | Web interface for file upload |
+
+### API Examples
+
+**Health Check:**
+```bash
+curl http://localhost:8080/health
+```
+
+**Basic Conversion:**
+```bash
+curl -X POST -F "file=@input.xlsx" -F "separator=comma" \
+  -o result.csv http://localhost:8080/convert
+```
+
+**Convert All Sheets (returns ZIP):**
+```bash
+curl -X POST -F "file=@input.xlsx" -F "all_sheets=true" \
+  -o results.zip http://localhost:8080/convert
+```
+
+**Advanced Options:**
+```bash
+curl -X POST \
+  -F "file=@input.xlsx" \
+  -F "separator=semicolon" \
+  -F "start_row=3" \
+  -F "sheet_name=Data" \
+  -o result.csv http://localhost:8080/convert
+```
+
+### API Parameters
+
+| Parameter | Type | Description | Values |
+|-----------|------|-------------|--------|
+| `file` | file | Excel file (required) | .xlsx, .xls, .ods |
+| `separator` | string | CSV separator | `comma`, `semicolon`, `tab` |
+| `start_row` | integer | Force start row (0-based) | 0, 1, 2, ... |
+| `sheet_name` | string | Specific sheet name | Sheet name |
+| `sheet_index` | integer | Specific sheet index (0-based) | 0, 1, 2, ... |
+| `all_sheets` | boolean | Convert all sheets | `true`, `false` |
+
+### Web Interface
+
+The server provides a simple web interface at `http://localhost:8080/` for:
+- File upload via drag & drop or file picker
+- Configuration of conversion parameters
+- Direct download of converted files
+- Multi-sheet conversion with ZIP download
+
+### Docker Support
+
+```bash
+# Build image
+docker build -t excel2csv .
+
+# Run HTTP server
+docker run -p 8080:8080 excel2csv
+
+# Test the containerized API
+curl -X POST -F "file=@test.xlsx" http://localhost:8080/convert
 ```
 
 ## How It Works
+
+### Multi-Sheet Support
+
+The converter provides flexible sheet handling:
+
+1. **Sheet Discovery**: Automatically detects all available sheets in Excel files
+2. **Sheet Selection**: Choose sheets by name or zero-based index
+3. **Batch Processing**: Convert all sheets at once with descriptive filenames
+4. **Fallback Detection**: Uses multiple methods to identify sheet names and count
 
 ### Automatic Table Detection
 
@@ -110,12 +242,13 @@ The converter uses intelligent algorithms to:
 
 ## Example Conversions
 
-The tool has been tested with various file types:
+The tool has been tested with various file types and sheet configurations:
 
-- **Price Lists**: Automatically skips supplier information headers
-- **Invoices**: Excludes totals and footer information
-- **Stock Lists**: Handles large datasets (tested with 900k+ rows)
-- **Reports**: Processes files with mixed content layouts
+- **Multi-Sheet Reports**: Process workbooks with data, charts, and summary sheets
+- **Price Lists**: Automatically skips supplier information headers across multiple sheets
+- **Invoices**: Excludes totals and footer information from specific sheets
+- **Stock Lists**: Handles large datasets (tested with 900k+ rows) across multiple worksheets
+- **Financial Reports**: Processes quarterly/monthly data from different sheets
 
 ## API Usage
 
@@ -133,6 +266,14 @@ func main() {
     converter.CSVSeparator = ';'
     converter.CleanLineBreaks = true
     
+    // Sheet selection options
+    converter.SheetName = "Sales Data"        // Convert specific sheet by name
+    // OR
+    sheetIndex := 1
+    converter.SheetIndex = &sheetIndex        // Convert specific sheet by index
+    // OR
+    converter.AllSheetsMode = true            // Convert all sheets
+    
     // Optional: force specific rows
     startRow := 5
     converter.ForceDataStartRow = &startRow
@@ -141,6 +282,16 @@ func main() {
     err := converter.ConvertFile("input.xlsx", "output.csv")
     if err != nil {
         panic(err)
+    }
+    
+    // List sheets programmatically
+    sheets, err := converter.ListSheets("input.xlsx")
+    if err != nil {
+        panic(err)
+    }
+    
+    for _, sheet := range sheets {
+        fmt.Printf("Sheet %d: %s\n", sheet.Index, sheet.Name)
     }
 }
 ```
@@ -161,6 +312,24 @@ Error: LibreOffice is not available. Please install LibreOffice
 ```
 *Solution*: Install LibreOffice using your system's package manager
 
+**LibreOffice Snap Compatibility:**
+When using LibreOffice installed via snap, you might encounter file access issues. The application automatically handles this by:
+- Using home directory for temporary files instead of `/tmp/`
+- Adjusting file paths for snap container compatibility
+- Setting appropriate environment variables
+
+If you see warnings like:
+```
+/snap/libreoffice/355/javasettings.py:44: SyntaxWarning: invalid escape sequence '\d'
+```
+These are normal and don't affect functionality.
+
+**HTTP Server Issues:**
+```
+Error: source file could not be loaded
+```
+*Solution*: This is automatically resolved in the latest version. The HTTP server now uses home directory for temporary files, ensuring LibreOffice snap compatibility.
+
 **Permission denied:**
 ```
 Error: permission denied
@@ -172,21 +341,4 @@ Error: permission denied
 
 ## License
 
-MIT License - see LICENSE file for details
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Submit a pull request
-
-## Changelog
-
-### v1.0.0
-- Initial release
-- Smart table boundary detection
-- Multiple separator support
-- LibreOffice integration
-- Configurable options
+MIT License

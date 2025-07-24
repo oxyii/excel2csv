@@ -1,1 +1,80 @@
-.idea
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Build outputs
+excel2csv
+excel2csv-server
+*.bin
+
+# Test and output files
+*.csv
+test_*.csv
+*_test.csv
+output/
+results/
+
+# LibreOffice temp directories
+excel2csv_temp/
+excel2csv_temp_*/
+excel2csv_http_temp/
+
+# Local development files
+.env
+.env.local
+.env.*.local
+
+# Coverage files
+coverage.txt
+coverage.html
+*.cover
+
+# Profiling files
+*.prof
+
+# Debug files
+debug
+
+# Examples are kept, but not test outputs in examples
+examples/*.csv
+examples/output/
+
